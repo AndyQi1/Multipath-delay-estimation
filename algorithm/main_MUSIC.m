@@ -1,0 +1,133 @@
+%% LoS identification, Ding, Qian 2023/4/28
+
+clear all
+close all
+load pilot.mat % transmit SRS signal frequency-domain data
+load example_64Tc.mat % LoS path with no noise
+
+Tc = 1/(480 * 1000 * 4096); % minimum time slot (0.509ns)
+fc = 2565e6; % carrier frequency (2565MHz)
+B = 100e6; % bandwidth (100MHz)
+scs = 30e3; % gap between subcarriers (30kHz)
+dx = 5e-2;dy = 5e-2; % antenna size (5cm)
+comb = 4; % number of combs
+T = 64*Tc/3; % symbol time length according to example_64Tc
+
+addpath '..\data'
+addpath '.\raw data'
+namelist = dir('.\raw data\*.mat');
+%
+len = length(namelist);
+
+% x = pilot;
+% x  = x.';
+x = pilot.';
+Res = 0.01;
+DelayLen = 256/Res;
+SNR = 3; % threshold for LoS peak detection
+N = 816;L = 408;
+H_Sample_gap = 1;
+% eigThreshold = 3e-3;
+eigThreshold = 1e-4;
+
+for i = 1:len
+    
+    file_name = namelist(i).name;
+    data = load(file_name);
+    y = data.y.';
+    
+    H = y./x;
+    
+    H_ = zeros(L,1);
+    Scalar = 0;
+    %     for hh = 1:1:N - 2*L + 1  % original non-overlapping
+    %         H_ = H_ + H(hh:hh+L-1,:)*H(hh+L:hh+2*L-1,:)';
+    %         Scalar = Scalar + 1;
+    %     end
+    %     for HH = 1:N - 2*L + 1 % partial overlapping
+    %         %     eigThreshold = 3e-3;
+    %         for hh = 0:H_Sample_gap
+    %             H_ = H_ + H(HH:HH+L-1,:)*H(HH+L-hh:HH+2*L-1-hh,:)';
+    %             Scalar = Scalar + 1;
+    %         end
+    %     end
+    H = H*H';
+    for HH = 1:N + 1-L - H_Sample_gap % postive smoothing
+        %     eigThreshold = 3e-3;
+        H_ = H_ + H(HH:HH+L-1,HH:HH+L-1);
+        Scalar = Scalar + 1;
+    end
+    F = fliplr(eye(N));                             % transpose matrix
+    H = F*(conj(H))*F;
+    for HH = 1:N + 1-L - H_Sample_gap % negative smoothing
+        %     eigThreshold = 3e-3;
+        H_ = H_ + H(HH:HH+L-1,HH:HH+L-1);
+        Scalar = Scalar + 1;
+    end
+    H_ = 1/Scalar*H_;
+    %     for hh = 1:N - L + 1  % all overlapping
+    %         eigThreshold = 0.01;
+    %         H_ = H_ + H(hh:hh+L-1,:)*H(hh:hh+L-1,:)';
+    %         Scalar = Scalar + 1;
+    %     end
+%     H = H_;
+    %     a = H_*H_';
+    a = H_;
+    
+    [U,D] = eig(a);
+    %     D = abs(D);
+    D = diag(D)';
+    [D, I] = sort(D);
+    U = fliplr(U(:,I));
+    [Lp,MDL] = LS_MDL(D,Scalar,L);
+    %     Lp = 10;
+    for kk = 1:DelayLen
+        V = exp(-1j*2*pi*[0:length(D)-1]'*scs*comb*kk*Res*Tc);
+        P_MUSIC(kk) = 1/abs((V'*U(:,Lp + 1:end)*(V'*U(:,Lp + 1:end))'));
+    end
+    %         [v,id] = max(P_MUSIC);
+    %         id*Res/Tc
+    P_MUSIC = 10*log10((P_MUSIC)/max(P_MUSIC));
+    [pks, pksid, w, p] = findpeaks(P_MUSIC);
+    %     [~,sortedpksid] = sort(P_MUSIC(pksid),'descend');
+    
+    sxy = y.*conj(x);
+    %         sxy = sxy./abs(sxy);
+    sxy = (ifft(sxy,length(y)));
+    cxy = sxy(:,1:end);
+    [~, pksid_corr, ~, ~] = findpeaks(abs(sum(cxy(1:20,:),2)));
+    peaksind = min(pksid_corr)*T/Tc;
+    flag = 0;
+    for findlos = 1:length(pksid)
+        if P_MUSIC(pksid(findlos)) - min(P_MUSIC) > SNR
+            IND = pksid(findlos);
+            flag = 1;
+            break;
+        end
+    end
+    if flag == 0
+        IND = pksid(1);
+    end
+    %     IND = min(pksid(p/min(p) >= SNR));
+    %     IND = min(pksid(P_MUSIC(pksid) - min(P_MUSIC) >= SNR));
+    %     IND = min(pksid);
+    delay(i) = IND*Res;
+    i
+end
+% delay_sort - delay_max
+
+%% write into txt file
+% delay(401:800) = delay(401:800) - dx/2*sqrt(2)*1e-2/1e8/Tc;
+fid = fopen(['..\data\','answer.txt'],'w');
+for kk = 1:length(delay)
+    if kk < length(delay)
+        fprintf(fid,'%.2f,\n',delay(kk));
+    else
+        fprintf(fid,'%.2f',delay(kk));
+    end
+end
+fclose(fid);
+% delay1 = delay;
+% [gap,which] = sort(abs(delay - delay1))
+% save scoretobetest_smoothing_Res001_L_408_SNR3
+
